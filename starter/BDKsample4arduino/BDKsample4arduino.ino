@@ -1,0 +1,468 @@
+//----------------------------------------------------------------------
+// ベゼリー開発キット(BDK) サンプルプログラム Arduino Micro用
+// 最終更新：2015年1月16日　豊田淳
+// 機能：
+//----------------------------------------------------------------------
+// inputの切り替え
+const int inputRandom = 1;      // ランダムで動かす
+const int inputKey = 2;         // キーボードから操作する
+const int inputDistance = 3;    // 距離センサーによる入力
+const int inputMic = 4;         // マイク
+const int inputType = inputDistance; // この式の右辺を書き換えることでinputを切り替える。
+
+#include <Servo.h>              // サーボのライブラリ
+#include <Adafruit_NeoPixel.h>  // マイコン内蔵フルカラーシリアルLED NeoPixelのライブラリ
+#ifdef __AVR__
+#include <avr/power.h>
+#endif
+#include <Wire.h>  // I2Cライブラリ
+
+// 音声合成チップ AquesTalk
+#include <AquesTalk.h> // AquesTalk ライブラリ
+AquesTalk atp;  //インスタンス定義 変数名は任意
+const char mes1[] PROGMEM =  "sugo-'i."; //すごーい
+const char mes2[] PROGMEM =  "otukaresama."; //おつかれさま
+
+// 記述ルール　http://www.a-quest.com/download/manual/atp3011_datasheet.pdf
+//           ' アクセント記号。音が高→低に切り替わる間に入れる。
+//           / 一文の中に複数のアクセントを設定する場合はスラッシュで区切る
+//           _ 無声化。_suなど。決められた文字にしか指定できない。
+//           っ 'xtu
+
+// GPIO Pin指定
+const int pinLed = 5;    // LED PWM駆動
+const int pinPix = 6;    // シリアルフルカラーLED NeoPixel PWM
+const int pinPiezo = 7;  // 圧電スピーカ
+const int pinSwitch = 8; // スイッチ
+const int pinSvP = 9;    // Pitch用サーボ PWM駆動
+const int pinSvR = 10;   // Roll用サーボ PWM駆動
+const int pinSvY = 11;   // Yaw用サーボ PWM駆動
+const int pinDin = 12;   // 汎用デジタル入力pin
+const int pinPwm = 13;   // 汎用PWMpin
+
+// RCサーボモータ Power Pro SG90
+//        Pitch=首の縦振り, Roll=首の横振り, Yaw=体の左右回転
+Servo svP; // Servo for Pitch 顔の縦振り用サーボ
+Servo svR; // Servo for Roll 顔の回転用サーボ
+Servo svY; // Servo for Yaw 体の回転用サーボ
+const int svPc = 90;           // Pitchの中心 
+const int svPmaxU = svPc - 25; // Pitch最大角度
+const int svPmidU = svPc - 15; // Pitch上方中
+const int svPmaxD = svPc + 15; // Pitch最小角度
+const int svRc = 100;           // Rollの中心
+const int svRmaxL = svRc - 20; // Roll左最大角度
+const int svRmidL = svRc - 10;
+const int svRmaxR = svRc + 20; // Roll右最大角度
+const int svRmidR = svRc + 10;
+const int svYc = 90;           // Yawの中心
+const int svYmaxL = svYc + 40; // Yaw左最大角度
+const int svYmidL = svYc + 20; //
+const int svYmaxR = svYc - 40; // Yaw右最大角度
+const int svYmidR = svYc - 20; //
+int posP = svPc;        // Pitchサーボの現在の角度
+int destP = svPc;       // Pitchサーボの目標角度
+int posR = svRc;        // Rollサーボの現在の角度
+int destR = svRc;       // Rollサーボの目標角度
+int posY = svYc;        // Yawサーボの現在の角度
+int destY = svYc;       // Yawサーボの目標角度
+int spd = 0;            // サーボの速度。0で最速。
+
+// マイコン内蔵シリアルフルカラーLED NeoPixel
+const int off = 0;
+const int white = 1;
+const int red = 2;
+const int green = 3;
+const int blue = 4;
+const int yellow = 5;
+const int pink = 6;
+const int dirL = 0;
+const int dirR = 1;
+const int dirW = 3;
+const int pixRing = 16;                         // 
+const int pixHead = 2;                          // NeoPixel 頭部のLED数
+const int pixBody = 0;                          //
+const int pixNum = pixRing + pixHead + pixBody; //
+const int pixRingStart = 5;                    // Ring回転の開始位置
+int color = off;                               // 色
+int dir = dirL;                                // 回転方向
+int r = 0;
+int g = 0;
+int b = 0;
+Adafruit_NeoPixel pixels = Adafruit_NeoPixel(pixNum, pinPix, NEO_GRB + NEO_KHZ800);
+
+// 圧電スピーカ（圧電サウンダ）によるメロディ演奏
+const int toneDo = 262;  // ド
+const int toneRe = 294;  // レ
+const int toneMi = 330;  // ミ
+const int toneFa = 349;  // ファ
+const int toneSo = 392;  // ソ
+const int toneRa = 440;  // ラ
+const int toneSi = 494;  // シ
+const int toneDo2 = 523; // ド
+const int beat = 200;    // 音の長さ（圧電スピーカ用）
+const int rest = 100;    // 休符の長さ（圧電スピーカ用）
+
+// 赤外線測距モジュール Sharp GP2Y0A21YK0F 有効距離=10cm〜80cm
+//        10cm=450, 20cm=250, 30cm=170, 40cm=140, 50cm=110, 60cm=100, 70cm=90, 80cm=80   
+const int near = 400;  // 近いと判断する値（赤外線距離センサー用）
+const int far = 200;   // 遠いと判断する値（赤外線距離センサー用）
+
+// アナログサウンドセンサーモジュール DFR0034
+const int dbMax = 50;         // 音量大
+const int dbMid = 0;         // 音量中
+
+// タクトスイッチ
+int swNow;              // 現在のスイッチの状態 HIGH or LOW
+int swPast = LOW;       // 過去のスイッチの状態 HIGH or LOW
+int ledState = 0;       // LEDの点灯状態 1=on, 0=off
+
+// 変数設定
+char key[] = "udslrinh";  // ランダムで再生されるコマンドの指定
+const int commNum = 8;  // コマンドの種類
+int keyNum;             // ランダムで選ばれたコマンド番号
+char keyChr;            // コマンド文字
+int inputValue;         // 入力値
+
+// 配線情報
+// Arduino UNO http://cdn.dev.classmethod.jp/wp-content/uploads/2014/12/arduino-pinout-diagram.png
+// Arduino micro http://40.media.tumblr.com/cdadca4e95808b376de52a88a5468367/tumblr_mi61oww6cu1s5t695o1_1280.png
+// 赤外線測距モジュール Sharp GP2Y0A21YK0F 有効距離=10cm〜80cm
+//                白 Analog0, 赤 GND, 黒 Vcc; GNDとVccの間に47uF電解コンデンサを入れると安全
+// RCサーボ TowerPro sg90  茶 GND, 赤 Vcc, 橙＝信号
+// PIR 焦電型赤外線センサー 赤＝Vcc、白＝GND、黒＝signal 平常時＝1、動きあり＝0
+// アナログサウンドセンサーモジュール　DFR0034
+//                青 音声出力、赤　DC5V、黒 GND
+//
+//----------------------------------------------------------------------
+void setup() // 初期設定
+{
+  servoMove();                // サーボのセンタリング
+  pixels.begin();             // NeoPixel初期化
+  color = blue;               // 色指定
+  pixAll();                   // 全LED点灯
+  pinMode (pinLed, OUTPUT);
+  pinMode (pinPix, OUTPUT);  
+  pinMode (pinPiezo, OUTPUT);  
+  pinMode (pinSwitch, INPUT); 
+  atp.SetAccent(0x70);      // 声色指定 アクセント AquesTalk
+  atp.SetPitch(0x03);       // 声色指定 ピッチ AquesTalk
+  atp.SetSpeed(100);        // 声色指定 スピード AquesTalk
+  atp.Synthe("#J");	      // 起動音　チャイム１ AquesTalk
+  while(atp.IsBusy()) ;     // 鳴り止むまで待つ AquesTalk
+  randomSeed(analogRead(1));  // ランダム初期化 未使用のアナログ入力pinを利用
+  Serial.begin(9600);
+  delay (500);
+  color = off;
+  pixAll();                   // 全LED点灯
+}
+//----------------------------------------------------------------------
+void loop() // メインループ
+{
+  if (inputType == inputRandom){   // ランダムで動かす場合
+    keyNum = random(0,commNum);    //乱数の下限と上限を指定するが、上限は指定値より１少ない値になる
+    keyChr = key[keyNum];
+  }
+  if (inputType == inputKey){      // キーボードから入力する場合
+    if(Serial.available()>0){ 
+    keyChr = Serial.read();        //
+    }
+  }
+  if (inputType == inputDistance){ // 距離センサーを使う場合
+    inputValue = analogRead(0);
+    Serial.print(inputValue, DEC);
+    Serial.print("\n");
+    if (inputValue > near) {       // nearより近かった場合
+      keyChr = 'h';
+    }else if(inputValue > far){    // farより近かった場合
+      keyChr = 'n';
+    }else{
+      keyChr = 'c';
+    }
+  }  
+  if (inputType == inputMic){      // マイクを使う場合
+    inputValue = analogRead(0);
+    Serial.print(inputValue, DEC);
+    Serial.print("\n");
+    if (inputValue > dbMax) {      // 大音量の場合
+      keyChr = 'h';
+    }else if(inputValue > dbMid){  // 中音量の場合
+      keyChr = 'i';
+    }else{
+      keyChr = 'c';
+    }
+  }  
+
+  switch (keyChr){
+// c=centering センタリング
+// u=up 見上げ
+// d=down 見下ろし
+// s=swing 首振り
+// l＝left 左向き
+// r=right 右向き
+// i=incline 首かしげ
+// n=nod うなずき
+// h=happy よろこび
+    case 'c': // centering センタリング
+      spd = 10;
+      destP = svPc;
+      destR = svRc;
+      destY = svYc;
+      servoMove();
+      break;
+    case 'u': // up 見上げ
+      color = blue;
+      pixEye();
+      toneHi();
+      spd = 20;
+      destP = svPmaxU;
+      servoMove();
+      delay (500);
+      break;    
+    case 'd': // down 見下ろし
+      color = blue;
+      pixEye();
+      toneYes();
+      spd = 20;
+      destP = svPmaxD;
+      servoMove();
+      delay (500);
+      break;
+    case 's': // swing 首ふり
+      color = blue;
+      pixEye();
+      toneFun();
+      spd = 0;
+      destR = svRmaxL;    
+      servoMove();    
+      destR = svRmaxR;    
+      servoMove();    
+      destR = svRc;    
+      servoMove();    
+      break;
+    case 'l': // left 左Yaw回転
+      color = green;
+      dir = dirL;
+      pixRotation();
+      spd = 10;
+      destY = svYmaxL;    
+      servoMove();
+      color = off;
+      pixRotation();    
+      break;
+    case 'r': // right 右Yaw回転
+      color = green;
+      dir = dirR;
+      pixRotation();
+      spd = 10;
+      destY = svYmaxR;    
+      servoMove();
+      color = off;    
+      pixRotation();    
+      break;
+    case 'i': // incline 首かしげ
+      color = blue;
+      pixEye();
+      spd = 10;
+      destR = svRmaxL;    
+      servoMove();
+      delay (500);    
+      destR = svRc;
+      servoMove();
+      break;
+    case 'n': // nod うなずき 
+       atp.SyntheP(mes1);
+     for (int i=0;i<2;i++){ 
+      color = blue;
+      pixEye();
+      spd = 10;
+      destP = svPmaxD;
+      servoMove();
+      color = off;
+      pixEye ();
+      spd = 20;
+      destP = svPc;
+      servoMove();
+      }
+      break;
+    case 'h': // happy 喜び
+      atp.SyntheP(mes2);
+      color = yellow;
+      pixEye();
+      spd = 10;
+      destP = svPmaxU;
+      servoMove();
+      color = yellow;
+      dir = dirL;
+      pixRotation();
+      spd = 5;
+      for (int i=0;i<2;i++){ 
+      destR = svRmidL;
+      servoMove();
+      destR = svRmidR;
+      servoMove();
+      }
+      break;      
+    default: // はずれ
+      color = pink;
+      pixEye();
+      delay(500);    
+      break;    
+      }
+  spd = 20;
+  destP = svPc;
+  destR = svRc;
+  destY = svYc;
+  servoMove();
+  color = off;
+  pixAll();
+  delay (1000);
+}
+//----------------------------------------------------------------------
+//関数
+
+void swCheck (){
+  swNow = digitalRead (pinSwitch); // スイッチの値を読み込む
+  if ((swNow == HIGH) && (swPast == LOW)){ // 押されてなかったスイッチが押されたら。
+    ledState = 1 - ledState;      // 消えていたらつける、ついてたら消す
+    delay (10);                   // ノイズ対策でちょっと待つ
+  }
+  swPast = swNow;
+  if (ledState == 1){
+    digitalWrite(pinLed, HIGH);
+  }else{
+    digitalWrite(pinLed, LOW);
+  }
+}  
+
+void servoMove (){
+  while (posP != destP){
+    svP.attach(pinSvP);    
+    if (posP < destP){
+      posP++;
+    }else{
+      posP--;
+    }
+    svP.write(posP);
+    delay (spd+15);  
+  }
+  while (posR != destR){
+    svR.attach(pinSvR);    
+    if (posR < destR){
+      posR++;
+    }else{
+      posR--;
+    }
+    svR.write(posR);
+    delay (spd+15);  
+  }
+  while (posY != destY){
+    svY.attach(pinSvY);    
+    if (posY < destY){
+      posY++;
+    }else{
+      posY--;
+    }
+    svY.write(posY);
+    delay (spd+15);  
+  }
+  svP.detach ();
+  svR.detach ();
+  svY.detach ();
+}  
+void toneYes (){
+      tone(pinPiezo,toneDo,beat) ;  // ド
+      delay(rest) ;
+      tone(pinPiezo,toneRe,beat) ;  // レ
+      delay(rest) ;
+      tone(pinPiezo,toneDo,beat) ;  // ミ
+}
+void toneHi (){
+      tone(pinPiezo,toneDo,beat) ;  // 
+      delay(rest) ;
+      tone(pinPiezo,toneRe,beat) ;  // 
+      delay(rest) ;
+      tone(pinPiezo,toneMi,beat) ;  // 
+}
+void toneFun (){
+      tone(pinPiezo,toneFa,beat) ;  // 
+      delay(rest) ;
+      tone(pinPiezo,toneSo,beat) ;  // 
+      delay(rest) ;
+      tone(pinPiezo,toneRa,beat) ;  // 
+}
+void setColor (){
+  switch (color){
+    case off:
+      r = 0;
+      g = 0;
+      b = 0;
+    break;
+    case white:
+      r = 255;
+      g = 255;
+      b = 255;
+    break;
+    case red:
+      r = 255;
+      g = 0;
+      b = 0;
+    break;    
+    case blue:
+      r = 0;
+      g = 0;
+      b = 255;
+    break;
+    case green:
+      r = 0;
+      g = 255;
+      b = 128;
+    break;    
+    case yellow:
+      r = 255;
+      g = 255;
+      b = 0;
+    break;      
+    case pink:
+      r = 255;
+      g = 100;
+      b = 100;
+    break;        default:
+      r = 255;
+      g = 0;
+      b = 0;
+    break;
+    }
+}
+void pixAll (){
+  setColor ();
+  for (int i=0;i<pixNum;i++){
+  pixels.setPixelColor(i, pixels.Color(r,g,b)); // NeoPixel発色指定
+  pixels.show(); // NeoPixel発色変更
+  }
+}
+void pixRotation (){
+  setColor();
+  int j = pixRingStart;
+  for (int i=0;i<pixRing;i++){
+    pixels.setPixelColor(j, pixels.Color(r,g,b)); // NeoPixel発色指定
+    pixels.show(); // NeoPixel発色変更
+    delay (10);
+    if (dir == dirL){
+      j = ++j;
+      if (j == pixRing){j = 0;}
+    }else{
+      j = --j;
+      if (j < 0){j = pixRing -1;}
+    }      
+  }
+}
+
+void pixEye (){
+  setColor();
+  pixels.setPixelColor(pixRing, pixels.Color(r,g,b)); // NeoPixel発色指定
+  pixels.setPixelColor(pixRing+1, pixels.Color(r,g,b)); // NeoPixel発色指定
+  pixels.show(); // NeoPixel発色変更
+}  
+
+//----------------------------------------------------------------------
+//end of file
