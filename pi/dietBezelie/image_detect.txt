@@ -1,0 +1,1 @@
+./detect.jpg 4:1
